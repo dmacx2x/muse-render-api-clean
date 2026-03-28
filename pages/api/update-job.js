@@ -7,7 +7,6 @@ export default async function handler(req, res) {
 
   try {
     const sql = getDB();
-
     const { id, status, output_url } = req.body;
 
     if (!id) {

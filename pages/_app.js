@@ -1,9 +1,5 @@
-import { ClerkProvider } from '@clerk/nextjs';
+import React from "react";
 
 export default function MyApp({ Component, pageProps }) {
-  return (
-    <ClerkProvider publishableKey={process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY}>
-      <Component {...pageProps} />
-    </ClerkProvider>
-  );
+  return <Component {...pageProps} />;
 }
