@@ -1,5 +1,5 @@
-import { getDB } from "../../lib/db";
 import { v4 as uuidv4 } from "uuid";
+import { getDB } from "../../lib/db";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -7,113 +7,81 @@ export default async function handler(req, res) {
   }
 
   try {
-    const sql = getDB();
     const { title, scenes } = req.body;
 
-    if (!Array.isArray(scenes) || scenes.length === 0) {
-      return res.status(400).json({ error: "Scenes required" });
+    if (!title || !scenes || !Array.isArray(scenes)) {
+      return res.status(400).json({ error: "Invalid request body" });
     }
 
-    if (!process.env.RENDER_WORKER_URL) {
-      return res.status(500).json({ error: "Missing RENDER_WORKER_URL" });
-    }
+    const sql = getDB();
 
-    if (!process.env.RUNPOD_API_KEY) {
-      return res.status(500).json({ error: "Missing RUNPOD_API_KEY" });
-    }
-
-    if (!process.env.UPDATE_JOB_URL) {
-      return res.status(500).json({ error: "Missing UPDATE_JOB_URL" });
-    }
-
+    // 🔥 Create Job
     const jobId = uuidv4();
 
     await sql`
       INSERT INTO jobs (id, title, status)
-      VALUES (${jobId}, ${title || "Untitled"}, 'processing')
+      VALUES (${jobId}, ${title}, 'queued')
     `;
 
-    const results = [];
+    const createdScenes = [];
 
     for (let i = 0; i < scenes.length; i++) {
       const scene = scenes[i];
       const sceneId = uuidv4();
-      const prompt = scene.prompt;
 
+      // 🔥 Insert Scene
       await sql`
         INSERT INTO scenes (id, job_id, prompt, duration, scene_order, status)
         VALUES (
           ${sceneId},
           ${jobId},
-          ${prompt},
-          ${scene.duration || 5},
+          ${scene.prompt},
+          ${scene.duration},
           ${i},
           'queued'
         )
       `;
 
-      console.log("🚀 Sending to RunPod:", sceneId);
+      // 🔥 SEND TO RUNPOD
+      const response = await fetch(process.env.RENDER_WORKER_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.RUNPOD_API_KEY}`,
+        },
+        body: JSON.stringify({
+          input: {
+            job_id: sceneId,
+            prompt: scene.prompt,
 
-      let data = {};
-      let responseText = "";
-
-      try {
-        const response = await fetch(process.env.RENDER_WORKER_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${process.env.RUNPOD_API_KEY}`
+            // 🔥 FIXED CALLBACK URL (NO ENV — HARD SET)
+            update_job_url:
+              "https://muse-render-api-clean.vercel.app/api/update-job",
           },
-          body: JSON.stringify({
-            input: {
-              prompt,
-              job_id: sceneId,
-              update_job_url: process.env.UPDATE_JOB_URL
-            }
-          })
-        });
+        }),
+      });
 
-        responseText = await response.text();
+      const data = await response.json();
 
-        try {
-          data = responseText ? JSON.parse(responseText) : {};
-        } catch (parseErr) {
-          console.error("❌ RunPod JSON parse failed:", responseText);
-          data = {};
-        }
-
-        if (!response.ok) {
-          console.error("❌ RunPod request failed:", {
-            status: response.status,
-            body: responseText
-          });
-        }
-      } catch (fetchErr) {
-        console.error("❌ RUNPOD FETCH ERROR:", fetchErr);
-        data = {};
-      }
-
+      // 🔥 Save RunPod Job ID
       await sql`
         UPDATE scenes
-        SET runpod_job_id = ${data.id || null}
+        SET runpod_job_id = ${data.id}
         WHERE id = ${sceneId}
       `;
 
-      results.push({
+      createdScenes.push({
         sceneId,
-        runpodJobId: data.id || null
+        runpodJobId: data.id,
       });
     }
 
     return res.status(200).json({
       jobId,
-      scenes: results
+      scenes: createdScenes,
     });
-  } catch (err) {
-    console.error("❌ RENDER ERROR:", err);
-
-    return res.status(500).json({
-      error: err.message
-    });
+  } catch (error) {
+    console.error("Render API Error:", error);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 }
